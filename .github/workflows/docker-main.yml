@@ -9,6 +9,7 @@ on:
     - cron: '0 3 * * *'
   repository_dispatch:
     types: [trigger-workflow]
+  workflow_dispatch:
 
 # 最小权限原则
 permissions:

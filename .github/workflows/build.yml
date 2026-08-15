@@ -26,13 +26,6 @@ jobs:
           token: ${{ secrets.GH_PAT }}   # 需要具有读取该私有仓库的 Personal Access Token
           submodules: true
 
-      - name: Force Webpack build (bypass Turbopack)
-        run: |
-          # 修改 apps/web/package.json，让 build 命令强制使用 Webpack
-          sed -i 's/"build": *"next build"/"build": "next build --webpack"/' apps/web/package.json
-          echo "Modified build script:"
-          grep '"build"' apps/web/package.json
-
       - name: Log in to the Container registry
         uses: docker/login-action@v4
         with:

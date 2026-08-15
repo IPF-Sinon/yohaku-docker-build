@@ -1,44 +1,72 @@
-name: 'Upstream Sync'
+name: 'Upstream Sync - Specific Date or Latest'
 
 on:
   schedule:
-    # 每天 UTC 0:00（北京时间 8:00）执行一次
+    # 定时任务（每天 UTC 0:00）会使用下方默认值（空 = 拉取最新）
     - cron: '0 0 * * *'
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
     inputs:
       sync_test_mode:
-        description: 'Fork Sync Test Mode'
+        description: 'Fork Sync Test Mode (skip push)'
         type: boolean
         default: false
+      target_date:
+        description: 'Date to sync to (format: YYYY-MM-DD). Leave empty to sync latest.'
+        type: string
+        default: ''            # 默认空 → 同步最新
 
 jobs:
-  sync_latest_from_upstream:
+  sync_upstream:
     runs-on: ubuntu-latest
-    name: Sync latest commits from upstream repo
+    name: Sync upstream (date or latest)
     steps:
-      # 步骤 1：检出你的目标仓库，并切换到 sync 分支
       - name: Checkout target repo
         uses: actions/checkout@v3
         with:
-          ref: sync                    # 指定分支为 sync
-          persist-credentials: false   # 关键：不保存默认的 GITHUB_TOKEN，避免后续操作使用错误凭据
+          ref: sync
+          fetch-depth: 0
+          persist-credentials: false
 
-      # 步骤 2：执行同步操作
-      - name: Sync upstream changes
-        id: sync
-        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
-        with:
-          target_sync_branch: sync                 # 你的目标分支名
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }}  # 操作你仓库的 Token
-          upstream_sync_branch: main               # 上游仓库要同步的分支
-          upstream_sync_repo: innei-dev/Yohaku     # 上游仓库全名
-          upstream_repo_access_token: ${{ secrets.UPSTREAM_REPO_SECRET }}  # 访问上游的 Token
-          test_mode: ${{ inputs.sync_test_mode }}  # 测试模式（不会真的推送）
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # 步骤 3：输出结果
-      - name: New commits found
-        if: steps.sync.outputs.has_new_commits == 'true'
-        run: echo "检测到上游有新提交，已同步。"
-      - name: No new commits
-        if: steps.sync.outputs.has_new_commits == 'false'
-        run: echo "上游没有新提交。"
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream https://x-access-token:${{ secrets.UPSTREAM_REPO_SECRET }}@github.com/innei-dev/Yohaku.git
+          git fetch upstream main
+
+      - name: Determine target commit (date or latest)
+        id: date_commit
+        run: |
+          DATE="${{ inputs.target_date }}"
+          if [ -z "$DATE" ]; then
+            # 无日期 → 取 upstream/main 最新提交
+            COMMIT=$(git rev-parse upstream/main)
+            echo "Syncing to latest commit: $COMMIT"
+          else
+            # 有日期 → 查找该日期 23:59:59 UTC 前的最后提交
+            COMMIT=$(git rev-list -1 --before="${DATE}T23:59:59Z" upstream/main)
+            if [ -z "$COMMIT" ]; then
+              echo "No commit found before $DATE"
+              exit 1
+            fi
+            echo "Syncing to commit at $DATE: $COMMIT"
+          fi
+          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+
+      - name: Reset sync branch to target commit
+        run: |
+          git reset --hard ${{ steps.date_commit.outputs.commit }}
+          echo "Local sync branch now at: $(git rev-parse HEAD)"
+
+      - name: Push to target repo
+        if: ${{ !inputs.sync_test_mode }}
+        run: |
+          git remote set-url origin https://x-access-token:${{ secrets.UPSTREAM_REPO_SECRET }}@github.com/${{ github.repository }}.git
+          git push origin sync --force
+
+      - name: Skip push (test mode)
+        if: ${{ inputs.sync_test_mode }}
+        run: echo "Test mode enabled, push skipped."

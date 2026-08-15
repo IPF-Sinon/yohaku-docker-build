@@ -1,56 +1,65 @@
-name: Create and publish a Docker image
+name: 构建并发布 Docker 镜像
 
 on:
-  push:
-    branches: ['main']
+  # 由 IPF-Sinon/Yohaku 仓库的同步工作流触发（当上游更新被同步后）
+  repository_dispatch:
+    types:
+      - sync-updated
+
+  # 支持手动触发，便于测试或紧急构建
   workflow_dispatch:
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/yohaku
+  REGISTRY: ghcr.io                           # 使用的容器镜像仓库（GitHub Container Registry）
+  IMAGE_NAME: ${{ github.repository_owner }}/yohaku   # 镜像名称，格式：所有者/应用名
 
 jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
-      attestations: write
-      id-token: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ github.repository_owner }}/Yohaku
-          ref: sync          # 关键：使用 sync 分支的代码（包含 Dockerfile）
-          token: ${{ secrets.GH_PAT }}   # 需要具有读取该私有仓库的 Personal Access Token
-          submodules: true
+      contents: read           # 读取仓库内容
+      packages: write          # 推送镜像到 GHCR 需要写入权限
+      attestations: write      # 用于生成镜像签名证明（可选）
+      id-token: write          # 用于 OIDC 认证（可选）
 
-      - name: Log in to the Container registry
-        uses: docker/login-action@v4
+    steps:
+      # 检出 sync 分支（该分支由上游同步工作流维护，包含最新源码）
+      - name: 检出同步分支
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/Yohaku   # 目标仓库（注意大小写）
+          ref: sync                                           # 使用 sync 分支
+          token: ${{ secrets.GH_PAT }}                        # 使用个人访问令牌确保有权限拉取
+          submodules: true                                    # 若存在子模块则一并拉取
+
+      # 登录到 GitHub Container Registry（ghcr.io）
+      - name: 登录容器镜像仓库
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GH_PAT}}
+          username: ${{ github.actor }}                       # 当前触发者用户名
+          password: ${{ secrets.GH_PAT }}                     # 使用相同的令牌进行身份验证
 
-      - name: Extract metadata (tags, labels) for Docker
+      # 提取 Docker 元数据（标签、标签等），用于构建时的自动打标
+      - name: 提取 Docker 元数据
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
-            type=sha
+            type=raw,value=latest      # 始终打上 latest 标签
+            type=sha                   # 同时根据 Git 提交 SHA 生成标签（如 sha-xxxxxxx）
 
-      - name: Build and push Docker image
+      # 构建并推送 Docker 镜像到 GHCR
+      - name: 构建并推送 Docker 镜像
         id: push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v6
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
+          context: .                     # 构建上下文为当前目录（即 sync 分支根目录）
+          push: true                     # 推送构建结果到镜像仓库
+          tags: ${{ steps.meta.outputs.tags }}          # 使用上一步生成的标签列表
+          labels: ${{ steps.meta.outputs.labels }}      # 同时应用元数据标签（如 org.opencontainers.image.*）
+          build-args: |                                 # 传递构建参数（敏感信息通过 secrets 传入）
             BASE_URL=${{ secrets.BASE_URL }}
             S3_ACCESS_KEY=${{ secrets.S3_ACCESS_KEY }}
             S3_SECRET_KEY=${{ secrets.S3_SECRET_KEY }}
